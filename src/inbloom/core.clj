@@ -4,21 +4,22 @@
   (:use [slingshot.slingshot :only [throw+ try+]]
         [ring.util.response :only [redirect]]
         [ring.middleware.session :only [wrap-session]]
+        [ring.middleware.session.cookie :only [cookie-store]]
         [ring.middleware.params :only [wrap-params]]))
 
 (def ^:dynamic *token*)
 
 (defn- init!
   "Initialize everything"
-  [api-server client-id secret app-server redirect]
-  (let [api-server (or api-server "api.sandbox.inbloom.org")
+  [api-server client-id secret app-server redirect] (let [api-server (or api-server "https://api.sandbox.inbloom.org")
         app-server (or app-server "localhost:3000")
         redirect (or redirect "/oauth")
         redirect-resource (str app-server redirect)]
+    (def api-server api-server)
     (def redirect-path redirect)
     (def api-url (str api-server "/api/rest/v1.1/"))
-    (def token-uri (str api-server "/api/oauth/token&client_id=" client-id "&redirect_uri="
-                        redirect-resource "&client_secret" secret "&code="))
+    (def token-uri (str api-server "/api/oauth/token?client_id=" client-id "&redirect_uri="
+                        redirect-resource "&client_secret=" secret "&code="))
     (def oauth-login (str api-server "/api/oauth/authorize?response_type=code&client_id="
                           client-id "&redirect_uri=" redirect-resource))))
 
@@ -27,72 +28,61 @@
   basically if the resource already starts with the api url, keep it as it is
   otherwise, append the resource to the api url"
   [resource]
-  (if (.startsWith resource api-url) resource (str api-url resource)))
-
-(defn- make-get-request
-  "make the actual request"
-  [resource]
-  (let [response (client/get (make-uri resource) {:oauth-token *token*})
-        code (:status response)
-        body (:body response)]
-    (if (= 200 code) body
-      (throw+ {:type :request-error :resource resource :body body :code code}))))
+  (if (.startsWith resource api-server) resource (str api-url resource)))
 
 (defn get-request
   "Make a request the api"
   [resource]
-  (json/read-str (:body (make-get-request resource))))
+  (let [uri (make-uri resource)]
+    (json/read-str (:body (client/get uri {:oauth-token *token*})))))
 
 (defn- logged-in?
   "is the user logged in?"
-  [{token :token}]
+  [{{token :token} :session}]
   (not (nil? token)))
 
 (defn- add-to-session
   "add a key/value to the session"
-  [request response k v]
+  [session response k v]
   (assoc response
-         :session (assoc (:session request) k v)))
-
-(defn- remove-from-session
-  "remove a key from the session"
-  [request response k]
-  (assoc response
-         :session (dissoc (:session request) k)))
+         :session (assoc session k v)))
 
 (defn- log-in
   "Send the user through the oauth flow"
   [request]
-  (remove-from-session
+  (let [requested (:uri request)]
     (add-to-session
-      request
+      (:session request)
       (redirect oauth-login)
-      :next (:uri request))
-    :next))
+      :next requested)))
 
 (defn- handle-oauth
   "Handle the oauth flow"
   [{params :query-params session :session}]
   (let [code (params "code")
-        token ((get-request (str token-uri code)) "access_token")]
-    (add-to-session
-      (redirect (:next session))
-      :token token)))
+        uri (str token-uri code)
+        token ((get-request uri) "access_token")
+        redirect-to (:next session)
+        response (add-to-session session (redirect redirect-to) :token token)]
+    response))
 
 (defn- with-token
   "bind the oauth token"
   [request handler]
   (binding [*token* (-> request :session :token)]
-    (handler request)))
+    (let [response (handler request)]
+      response)))
 
 (defn in-bloom
   "Middleware to handle authentication into inBloom
    If the request is already logged in, forward to the handler
    Otherwise, will go through the inBloom OAuth flow"
-  [handler {:keys [api-server client-id secret app-server redirect]}]
+  [handler & {:keys [api-server client-id secret app-server redirect]}]
   (init! api-server client-id secret app-server redirect)
-  (wrap-params (wrap-session
-    (fn [{session :session path :uri :as request}]
-      (if (= redirect-path path) handle-oauth
-        (if (logged-in? request) (with-token request handler)
-          (log-in request)))))))
+  (wrap-params
+    (wrap-session
+      (fn [{session :session path :uri :as request}]
+        (if (= redirect-path path) (handle-oauth request)
+          (if (logged-in? request) (with-token request handler)
+            (log-in request))))
+      {:store (cookie-store)})))
