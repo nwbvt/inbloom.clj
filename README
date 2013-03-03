@@ -1,0 +1,12 @@
+# inbloom.clj
+
+Provides clojure support for inbloom with a Ring webapp
+See https://www.inbloom.org/developer-documentation
+
+## Usage
+
+(in-bloom
+  my-hander-function
+  :client-id "myClientId" :secret "myClientSecret" :app-server "https://myappserver.com")
+
+(get-request "/courses/<my_course_id>")
