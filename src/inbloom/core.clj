@@ -86,3 +86,15 @@
           (if (logged-in? request) (with-token request handler)
             (log-in request))))
       {:store (cookie-store)})))
+
+(defn home
+  "Get the home resource"
+  []
+  (get-request "home"))
+
+(defn follow-link
+  "Follow a link in a response"
+  [link-rel resp]
+  (let [links (resp "links")
+        link ((first (filter #(= link-rel (% "rel")) links)) "href")]
+    (get-request link)))
